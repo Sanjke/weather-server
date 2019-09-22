@@ -118,4 +118,6 @@ environments:
         export: "/opt/weather/export/"
         dataSource:
             dbCreate: update
+            username: 'weather'
+            password: 'weather'
             url: "jdbc:postgresql://localhost:5432/weather"
