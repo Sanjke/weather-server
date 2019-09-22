@@ -28,7 +28,7 @@ class WeatherService {
 
     private String storage = Holders.config.getRequiredProperty('storage', String)
     private String exportStorage = Holders.config.getRequiredProperty('export', String)
-    ExecutorService executor = Executors.newFixedThreadPool(4)
+    ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
     SessionFactory sessionFactory
     ConcurrentLinkedQueue<String> sources = new ConcurrentLinkedQueue<>()
     ConcurrentLinkedQueue<String> urls = new ConcurrentLinkedQueue<>()
@@ -80,12 +80,13 @@ class WeatherService {
     }
 
     void analyze() {
+        System.out.println("Start analyze using ${Runtime.getRuntime().availableProcessors()} CPUs")
         processStart = System.currentTimeMillis()
         try {
             File dir = new File(storage)
             allFiles = dir.listFiles().size()
             sources.addAll(dir.listFiles().collect { it.absolutePath })
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < Runtime.getRuntime().availableProcessors(); i++)
                 executor.execute {
                     processFile()
                 }
@@ -125,7 +126,6 @@ class WeatherService {
                     StatelessSession session = sessionFactory.openStatelessSession()
                     Transaction tx = session.beginTransaction()
 
-                    System.out.println("Start")
                     while (notRead > 14) {
                         fis.read(w)
                         WeatherReport report = new WeatherReport(date: new Date((Long) (startMillis / 10)), height: height, type: type, file: file.name)
@@ -135,7 +135,6 @@ class WeatherService {
                         notRead -= 13
                         startMillis += 125
                     }
-                    System.out.println("End")
 
                     tx.commit()
                     session.close()
