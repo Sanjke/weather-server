@@ -114,6 +114,8 @@ environments:
             url: "jdbc:postgresql://localhost:5432/weather"
 
     production:
+        storage: "/opt/weather/data/"
+        export: "/opt/weather/export/"
         dataSource:
             dbCreate: update
-            url: "jdbc:postgresql://localhost:5432/scholastic"
+            url: "jdbc:postgresql://localhost:5432/weather"
