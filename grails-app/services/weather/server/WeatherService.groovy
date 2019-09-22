@@ -105,11 +105,14 @@ class WeatherService {
                 long startTime = System.currentTimeMillis()
 
                 try {
-                    FileInputStream fis = new FileInputStream(file)
+                    InputStream fis = new ByteArrayInputStream(Files.readAllBytes(file.toPath()))
+
+
                     long notRead = file.length()
                     byte[] d = new byte[14]
                     byte[] w = new byte[13]
                     byte[] h = new byte[2]
+
 
                     fis.read(d)
                     notRead -= 14
