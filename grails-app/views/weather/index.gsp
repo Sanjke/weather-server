@@ -19,12 +19,13 @@
     To: <g:field type="text" name="to"/>
     Time: <g:field type="text" name="time"/>
     TimeRange: <g:field type="text" name="timeRange"/>
+    Range: <g:field type="number" name="range"/>
     <g:submitButton name="Generate"/>
 </g:form>
 <br/>
 <g:each var="file" in="${files}">
-    <g:if test="${!file.done}">
-        <a href="/file/${file.id}">${file.file}</a>
+    <g:if test="${file.done}">
+        <a href="/weather/file/${file.id}">${file.file}</a>
     </g:if>
     <g:else>
         ${file.file}

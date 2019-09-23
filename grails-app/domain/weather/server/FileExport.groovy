@@ -11,8 +11,8 @@ class FileExport {
     Date dateFrom
     Date dateTo
     Integer range
-    Long time
-    Long timeRange
+    Long time = 0
+    Long timeRange = 0
 
     static constraints = {
         time nullable: true

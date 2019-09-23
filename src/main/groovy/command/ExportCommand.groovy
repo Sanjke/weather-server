@@ -13,7 +13,6 @@ class ExportCommand implements Validateable {
     static constraints = {
         time nullable: true
         timeRange nullable: true
-        range nullable: true
     }
 
 }

@@ -11,7 +11,7 @@ class WeatherController {
         if (command.validate()) {
             weatherService.exportReport(command)
         }
-        render(view: "index", model: [files: FileExport.list()])
+        render(view: "index", model: [files: FileExport.list([sort: "created", order: "desc"])])
     }
 
     def file(Long id) {

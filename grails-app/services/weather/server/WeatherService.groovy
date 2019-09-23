@@ -1,6 +1,8 @@
 package weather.server
 
 import command.ExportCommand
+import export.ExportRow
+import export.TimeExportData
 import grails.gorm.transactions.Transactional
 import grails.util.Holders
 import helper.ByteHelper
@@ -10,6 +12,7 @@ import model.WeatherData
 import org.hibernate.SessionFactory
 import org.hibernate.StatelessSession
 import org.hibernate.Transaction
+import org.joda.time.DateTime
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -20,18 +23,24 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.text.SimpleDateFormat
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 @Transactional
 class WeatherService {
 
     private String storage = Holders.config.getRequiredProperty('storage', String)
     private String exportStorage = Holders.config.getRequiredProperty('export', String)
-    ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
+    ThreadPoolExecutor executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
+    ScheduledExecutorService fileExecutor = Executors.newSingleThreadScheduledExecutor()
     SessionFactory sessionFactory
     ConcurrentLinkedQueue<String> sources = new ConcurrentLinkedQueue<>()
     ConcurrentLinkedQueue<String> urls = new ConcurrentLinkedQueue<>()
+    ConcurrentLinkedQueue<TimeExportData> timeExports = new ConcurrentLinkedQueue<>()
+    ConcurrentLinkedQueue<ExportRow> rows = new ConcurrentLinkedQueue<>()
+    Long fileId
     private long processStart
     private int files = 0
     private int allFiles = 0
@@ -43,18 +52,27 @@ class WeatherService {
     }
 
     void exportReport(ExportCommand command) {
+        if (fileId)
+            return
         FileExport export = new FileExport()
         SimpleDateFormat format = new SimpleDateFormat("yyyy.MM.dd_HH.mm.ss")
         if (command.time) {
             export.type = ExportType.TIME
             export.dateFrom = format.parse(command.from + "_" + command.time)
             export.dateTo = format.parse(command.to + "_" + command.time)
-            format = new SimpleDateFormat("HH.mm.ss")
-            export.range = format.parse(command.time).time / 1000
-            format = new SimpleDateFormat("HH.mm.ss.SSS")
-            export.timeRange = format.parse(command.timeRange)
+            export.range = command.range
+            Long multiplier = 60*60L
+            command.time.split("\\.").each {
+                export.time += multiplier * Long.parseLong(it)
+                multiplier = multiplier / 60
+            }
+            multiplier = 60*60000L
+            command.timeRange.split("\\.").each {
+                export.timeRange += multiplier * Long.parseLong(it)
+                multiplier = multiplier > 1000 ? (multiplier / 60) : 1
+            }
             format = new SimpleDateFormat("yyyy.MM.dd_HH.mm.ss")
-            export.file = "AMK_MG--${format.format(new Date())}--${format.format(export.dateFrom)}--${format.format(export.dateTo)}--${command.range}--${command.timeRange}.dat"
+            export.file = "AMK_MG--${format.format(new Date())}--${format.format(export.dateFrom)}--${format.format(export.dateTo)}--${command.time}--${command.timeRange}.dat"
         } else {
             export.type = ExportType.RANGE
             format = new SimpleDateFormat("yyyy.MM.dd HH.mm.ss")
@@ -64,19 +82,107 @@ class WeatherService {
             format = new SimpleDateFormat("yyyy.MM.dd_HH.mm.ss")
             export.file = "AMK_MG--${format.format(new Date())}--${format.format(export.dateFrom)}--${format.format(export.dateTo)}--${export.range}.dat"
         }
-        generateExport()
-        File file = new File(exportStorage + export.file)
-        file.createNewFile()
-        export.save()
+        export.save(flush: true)
+        generateExport(export)
     }
 
-    void generateExport() {
+    void generateExport(FileExport export) {
         Path directory = new File(exportStorage).toPath()
         if (Files.notExists(directory)) Files.createDirectories(directory)
+
+        if (export.type == ExportType.RANGE) {
+            generateRangeExport(export)
+        } else if (export.type == ExportType.TIME) {
+            generateTimeReport(export)
+        }
+        for (int i = 0; i < Runtime.getRuntime().availableProcessors(); i++)
+            executor.execute {
+                processTimeExport()
+            }
+        fileId = export.id
     }
 
-    void generateRangeExport() {
+    void generateRangeExport(FileExport export) {
+        DateTime date = new DateTime(export.dateFrom)
+        DateTime endDate = new DateTime(export.dateTo)
+        if (export.range > 0) {
+            DateTime nextDate = date.plusMinutes(export.range * 10)
+            while (nextDate.isBefore(endDate)) {
+                TimeExportData exportData = new TimeExportData(dateFrom: date.toDate(), dateTo: nextDate.toDate(), range: export.range)
+                timeExports.add(exportData)
+                date = nextDate
+                nextDate = nextDate.plusMinutes(export.range * 10)
+            }
+        }
+        TimeExportData exportData = new TimeExportData(dateFrom: date.toDate(), dateTo: endDate.toDate(), range: export.range)
+        timeExports.add(exportData)
+    }
 
+    void generateTimeReport(FileExport export) {
+        DateTime date = new DateTime(export.dateFrom)
+        DateTime endDate = new DateTime(export.dateTo)
+        date.withMillisOfDay((export.time * 1000).toInteger())
+        endDate.withMillisOfDay(((export.time + 1) * 1000).toInteger())
+        while (date.isBefore(endDate)) {
+            TimeExportData exportData = new TimeExportData(dateFrom: date.minusMillis(export.timeRange.toInteger()).toDate(),
+                    dateTo: date.plusMillis(export.timeRange.toInteger()).toDate(), range: export.range)
+            timeExports.add(exportData)
+            date = date.plusDays(1)
+        }
+    }
+
+    private void processTimeExport() {
+        TimeExportData exportData
+        if ((exportData = timeExports.poll()) == null) {
+            return
+        }
+        WeatherReport.withTransaction {
+            List<WeatherReport> weathers = WeatherReport.findAllByDateBetween(exportData.dateFrom, exportData.dateTo, [sort: "date", order: "asc"])
+            if (weathers.size() > 0) {
+                if (exportData.range == 0) {
+                    weathers.each {
+                        rows.add(new ExportRow(it))
+                    }
+                } else {
+                    DateTime date = new DateTime(weathers.get(0).date)
+                    ExportRow row
+                    weathers.each {
+                        if (date.millis <= it.date.time) {
+                            date = date.plusMinutes(exportData.range.toInteger())
+                            if (row)
+                                rows.add(row.normalize())
+                            row = new ExportRow(it)
+                        } else {
+                            row.sum(it)
+                        }
+                    }
+                    rows.add(row.normalize())
+                }
+            }
+        }
+        processTimeExport()
+    }
+
+    void generateReport() {
+        fileExecutor.schedule({
+            generateReport()
+        }, 5, TimeUnit.SECONDS)
+        if (fileId && executor.getActiveCount() == 0) {
+            FileExport.withTransaction {
+                FileExport fileExport = FileExport.get(fileId)
+                FileWriter fw = new FileWriter(exportStorage + fileExport.file)
+                Long id = 1
+                rows.sort { it.d }.each {
+                    fw.append(it.export(id++))
+                }
+                fw.flush()
+                fw.close()
+                fileExport.done = true
+                fileExport.save()
+                fileId = null
+                System.out.println("${fileExport.file} was generated")
+            }
+        }
     }
 
     void analyze() {
